@@ -3,6 +3,7 @@
 Logging utils
 """
 
+
 import os
 import warnings
 from threading import Thread
@@ -23,7 +24,9 @@ try:
     import wandb
 
     assert hasattr(wandb, '__version__')  # verify package import not local dir
-    if pkg.parse_version(wandb.__version__) >= pkg.parse_version('0.12.2') and RANK in [0, -1]:
+    if pkg.parse_version(wandb.__version__) >= pkg.parse_version(
+        '0.12.2'
+    ) and RANK in {0, -1}:
         try:
             wandb_login_success = wandb.login(timeout=30)
         except wandb.errors.UsageError:  # known non-TTY terminal issue
@@ -82,18 +85,21 @@ class Loggers():
 
     def on_train_batch_end(self, ni, model, imgs, targets, paths, plots, sync_bn):
         # Callback runs on train batch end
-        if plots:
-            if ni == 0:
-                if not sync_bn:  # tb.add_graph() --sync known issue https://github.com/ultralytics/yolov5/issues/3754
-                    with warnings.catch_warnings():
-                        warnings.simplefilter('ignore')  # suppress jit trace warning
-                        self.tb.add_graph(torch.jit.trace(de_parallel(model), imgs[0:1], strict=False), [])
-            if ni < 3:
-                f = self.save_dir / f'train_batch{ni}.jpg'  # filename
-                Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
-            if self.wandb and ni == 10:
-                files = sorted(self.save_dir.glob('train*.jpg'))
-                self.wandb.log({'Mosaics': [wandb.Image(str(f), caption=f.name) for f in files if f.exists()]})
+        if not plots:
+            return
+        if ni == 0 and not sync_bn:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')  # suppress jit trace warning
+                self.tb.add_graph(
+                    torch.jit.trace(de_parallel(model), imgs[:1], strict=False), []
+                )
+
+        if ni < 3:
+            f = self.save_dir / f'train_batch{ni}.jpg'  # filename
+            Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
+        if self.wandb and ni == 10:
+            files = sorted(self.save_dir.glob('train*.jpg'))
+            self.wandb.log({'Mosaics': [wandb.Image(str(f), caption=f.name) for f in files if f.exists()]})
 
     def on_train_epoch_end(self, epoch):
         # Callback runs on train epoch end
@@ -113,7 +119,7 @@ class Loggers():
 
     def on_fit_epoch_end(self, vals, epoch, best_fitness, fi):
         # Callback runs at the end of each fit (train+val) epoch
-        x = {k: v for k, v in zip(self.keys, vals)}  # dict
+        x = dict(zip(self.keys, vals))
         if self.csv:
             file = self.save_dir / 'results.csv'
             n = len(x) + 1  # number of cols
@@ -135,9 +141,12 @@ class Loggers():
 
     def on_model_save(self, last, epoch, final_epoch, best_fitness, fi):
         # Callback runs on model save event
-        if self.wandb:
-            if ((epoch + 1) % self.opt.save_period == 0 and not final_epoch) and self.opt.save_period != -1:
-                self.wandb.log_model(last.parent, self.opt, epoch, fi, best_model=best_fitness == fi)
+        if (
+            self.wandb
+            and ((epoch + 1) % self.opt.save_period == 0 and not final_epoch)
+            and self.opt.save_period != -1
+        ):
+            self.wandb.log_model(last.parent, self.opt, epoch, fi, best_model=best_fitness == fi)
 
     def on_train_end(self, last, best, plots, epoch, results):
         # Callback runs on training end
@@ -152,13 +161,17 @@ class Loggers():
                 self.tb.add_image(f.stem, cv2.imread(str(f))[..., ::-1], epoch, dataformats='HWC')
 
         if self.wandb:
-            self.wandb.log({k: v for k, v in zip(self.keys[3:10], results)})  # log best.pt val results
+            self.wandb.log(dict(zip(self.keys[3:10], results)))
             self.wandb.log({"Results": [wandb.Image(str(f), caption=f.name) for f in files]})
             # Calling wandb.log. TODO: Refactor this into WandbLogger.log_model
             if not self.opt.evolve:
-                wandb.log_artifact(str(best if best.exists() else last), type='model',
-                                   name='run_' + self.wandb.wandb_run.id + '_model',
-                                   aliases=['latest', 'best', 'stripped'])
+                wandb.log_artifact(
+                    str(best if best.exists() else last),
+                    type='model',
+                    name=f'run_{self.wandb.wandb_run.id}_model',
+                    aliases=['latest', 'best', 'stripped'],
+                )
+
             self.wandb.finish_run()
 
     def on_params_update(self, params):

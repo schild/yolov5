@@ -464,10 +464,13 @@ class DetectMultiBackend(nn.Module):
 
     def warmup(self, imgsz=(1, 3, 640, 640)):
         # Warmup model by running inference once
-        if self.pt or self.jit or self.onnx or self.engine:  # warmup types
-            if isinstance(self.device, torch.device) and self.device.type != 'cpu':  # only warmup GPU models
-                im = torch.zeros(*imgsz, dtype=torch.half if self.fp16 else torch.float, device=self.device)  # input
-                self.forward(im)  # warmup
+        if (
+            (self.pt or self.jit or self.onnx or self.engine)
+            and isinstance(self.device, torch.device)
+            and self.device.type != 'cpu'
+        ):
+            im = torch.zeros(*imgsz, dtype=torch.half if self.fp16 else torch.float, device=self.device)  # input
+            self.forward(im)  # warmup
 
     @staticmethod
     def model_type(p='path/to/model.pt'):
@@ -660,11 +663,20 @@ class Detections:
     def tolist(self):
         # return a list of Detections objects, i.e. 'for result in results.tolist():'
         r = range(self.n)  # iterable
-        x = [Detections([self.imgs[i]], [self.pred[i]], [self.files[i]], self.times, self.names, self.s) for i in r]
         # for d in x:
         #    for k in ['imgs', 'pred', 'xyxy', 'xyxyn', 'xywh', 'xywhn']:
         #        setattr(d, k, getattr(d, k)[0])  # pop out of list
-        return x
+        return [
+            Detections(
+                [self.imgs[i]],
+                [self.pred[i]],
+                [self.files[i]],
+                self.times,
+                self.names,
+                self.s,
+            )
+            for i in r
+        ]
 
     def __len__(self):
         return self.n

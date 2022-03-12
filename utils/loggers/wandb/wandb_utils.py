@@ -61,21 +61,22 @@ def get_run_info(run_path):
     run_id = run_path.stem
     project = run_path.parent.stem
     entity = run_path.parent.parent.stem
-    model_artifact_name = 'run_' + run_id + '_model'
+    model_artifact_name = f'run_{run_id}_model'
     return entity, project, run_id, model_artifact_name
 
 
 def check_wandb_resume(opt):
     process_wandb_config_ddp_mode(opt) if RANK not in [-1, 0] else None
-    if isinstance(opt.resume, str):
-        if opt.resume.startswith(WANDB_ARTIFACT_PREFIX):
-            if RANK not in [-1, 0]:  # For resuming DDP runs
-                entity, project, run_id, model_artifact_name = get_run_info(opt.resume)
-                api = wandb.Api()
-                artifact = api.artifact(entity + '/' + project + '/' + model_artifact_name + ':latest')
-                modeldir = artifact.download()
-                opt.weights = str(Path(modeldir) / "last.pt")
-            return True
+    if isinstance(opt.resume, str) and opt.resume.startswith(
+        WANDB_ARTIFACT_PREFIX
+    ):
+        if RANK not in [-1, 0]:  # For resuming DDP runs
+            entity, project, run_id, model_artifact_name = get_run_info(opt.resume)
+            api = wandb.Api()
+            artifact = api.artifact(f'{entity}/{project}/{model_artifact_name}:latest')
+            modeldir = artifact.download()
+            opt.weights = str(Path(modeldir) / "last.pt")
+        return True
     return None
 
 
@@ -131,7 +132,7 @@ class WandbLogger():
        """
         # Pre-training routine --
         self.job_type = job_type
-        self.wandb, self.wandb_run = wandb, None if not wandb else wandb.run
+        self.wandb, self.wandb_run = wandb, wandb.run if wandb else None
         self.val_artifact, self.train_artifact = None, None
         self.train_artifact_path, self.val_artifact_path = None, None
         self.result_artifact = None
@@ -156,19 +157,23 @@ class WandbLogger():
                                             allow_val_change=True)
                 opt.resume = model_artifact_name
         elif self.wandb:
-            self.wandb_run = wandb.init(config=opt,
-                                        resume="allow",
-                                        project='YOLOv5' if opt.project == 'runs/train' else Path(opt.project).stem,
-                                        entity=opt.entity,
-                                        name=opt.name if opt.name != 'exp' else None,
-                                        job_type=job_type,
-                                        id=run_id,
-                                        allow_val_change=True) if not wandb.run else wandb.run
+            self.wandb_run = wandb.run or wandb.init(
+                config=opt,
+                resume="allow",
+                project='YOLOv5'
+                if opt.project == 'runs/train'
+                else Path(opt.project).stem,
+                entity=opt.entity,
+                name=opt.name if opt.name != 'exp' else None,
+                job_type=job_type,
+                id=run_id,
+                allow_val_change=True,
+            )
+
         if self.wandb_run:
             if self.job_type == 'Training':
-                if opt.upload_dataset:
-                    if not opt.resume:
-                        self.wandb_artifact_data_dict = self.check_and_upload_dataset(opt)
+                if opt.upload_dataset and not opt.resume:
+                    self.wandb_artifact_data_dict = self.check_and_upload_dataset(opt)
 
                 if opt.resume:
                     # resume from artifact
@@ -243,7 +248,10 @@ class WandbLogger():
             data_dict['val'] = str(val_path)
 
         if self.val_artifact is not None:
-            self.result_artifact = wandb.Artifact("run_" + wandb.run.id + "_progress", "evaluation")
+            self.result_artifact = wandb.Artifact(
+                f"run_{wandb.run.id}_progress", "evaluation"
+            )
+
             columns = ["epoch", "id", "ground truth", "prediction"]
             columns.extend(self.data_dict['names'])
             self.result_table = wandb.Table(columns)
@@ -308,14 +316,19 @@ class WandbLogger():
         fitness_score (float) -- fitness score for current epoch
         best_model (boolean) -- Boolean representing if the current checkpoint is the best yet.
         """
-        model_artifact = wandb.Artifact('run_' + wandb.run.id + '_model', type='model', metadata={
-            'original_url': str(path),
-            'epochs_trained': epoch + 1,
-            'save period': opt.save_period,
-            'project': opt.project,
-            'total_epochs': opt.epochs,
-            'fitness_score': fitness_score
-        })
+        model_artifact = wandb.Artifact(
+            f'run_{wandb.run.id}_model',
+            type='model',
+            metadata={
+                'original_url': str(path),
+                'epochs_trained': epoch + 1,
+                'save period': opt.save_period,
+                'project': opt.project,
+                'total_epochs': opt.epochs,
+                'fitness_score': fitness_score,
+            },
+        )
+
         model_artifact.add_file(str(path / 'last.pt'), name='last.pt')
         wandb.log_artifact(model_artifact,
                            aliases=['latest', 'last', 'epoch ' + str(self.current_epoch), 'best' if best_model else ''])
@@ -340,7 +353,7 @@ class WandbLogger():
         self.data_dict = check_dataset(data_file)  # parse and check
         data = dict(self.data_dict)
         nc, names = (1, ['item']) if single_cls else (int(data['nc']), data['names'])
-        names = {k: v for k, v in enumerate(names)}  # to index dictionary
+        names = dict(enumerate(names))
 
         # log train set
         if not log_val_only:
@@ -357,7 +370,7 @@ class WandbLogger():
         path = Path(data_file)
         # create a _wandb.yaml file with artifacts links if both train and test set are logged
         if not log_val_only:
-            path = (path.stem if overwrite_config else path.stem + '_wandb') + '.yaml'  # updated data.yaml path
+            path = (path.stem if overwrite_config else f'{path.stem}_wandb') + '.yaml'
             path = ROOT / 'data' / path
             data.pop('download', None)
             data.pop('path', None)
@@ -385,7 +398,7 @@ class WandbLogger():
         """
         self.val_table_path_map = {}
         LOGGER.info("Mapping dataset")
-        for i, data in enumerate(tqdm(self.val_table.data)):
+        for data in tqdm(self.val_table.data):
             self.val_table_path_map[data[3]] = data[0]
 
     def create_dataset_table(self, dataset: LoadImagesAndLabels, class_to_id: Dict[int, str], name: str = 'dataset'):
@@ -403,7 +416,7 @@ class WandbLogger():
         # TODO: Explore multiprocessing to slpit this loop parallely| This is essential for speeding up the the logging
         artifact = wandb.Artifact(name=name, type="dataset")
         img_files = tqdm([dataset.path]) if isinstance(dataset.path, str) and Path(dataset.path).is_dir() else None
-        img_files = tqdm(dataset.im_files) if not img_files else img_files
+        img_files = img_files or tqdm(dataset.im_files)
         for img_file in img_files:
             if Path(img_file).is_dir():
                 artifact.add_dir(img_file, name='data/images')
@@ -412,17 +425,28 @@ class WandbLogger():
             else:
                 artifact.add_file(img_file, name='data/images/' + Path(img_file).name)
                 label_file = Path(img2label_paths([img_file])[0])
-                artifact.add_file(str(label_file),
-                                  name='data/labels/' + label_file.name) if label_file.exists() else None
+                artifact.add_file(
+                    str(label_file), name=f'data/labels/{label_file.name}'
+                ) if label_file.exists() else None
+
         table = wandb.Table(columns=["id", "train_image", "Classes", "name"])
         class_set = wandb.Classes([{'id': id, 'name': name} for id, name in class_to_id.items()])
         for si, (img, labels, paths, shapes) in enumerate(tqdm(dataset)):
             box_data, img_classes = [], {}
             for cls, *xywh in labels[:, 1:].tolist():
                 cls = int(cls)
-                box_data.append({"position": {"middle": [xywh[0], xywh[1]], "width": xywh[2], "height": xywh[3]},
-                                 "class_id": cls,
-                                 "box_caption": "%s" % (class_to_id[cls])})
+                box_data.append(
+                    {
+                        "position": {
+                            "middle": [xywh[0], xywh[1]],
+                            "width": xywh[2],
+                            "height": xywh[3],
+                        },
+                        "class_id": cls,
+                        "box_caption": f"{class_to_id[cls]}",
+                    }
+                )
+
                 img_classes[cls] = class_to_id[cls]
             boxes = {"ground_truth": {"box_data": box_data, "class_labels": class_to_id}}  # inference-space
             table.add_data(si, wandb.Image(paths, classes=class_set, boxes=boxes), list(img_classes.values()),
@@ -459,7 +483,7 @@ class WandbLogger():
                 else:
                     pred_class_count[cls] = 1
 
-        for pred_class in pred_class_count.keys():
+        for pred_class in pred_class_count:
             avg_conf_per_class[pred_class] = avg_conf_per_class[pred_class] / pred_class_count[pred_class]
 
         boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
@@ -483,15 +507,18 @@ class WandbLogger():
         if self.val_table and self.result_table:  # Log Table if Val dataset is uploaded as artifact
             self.log_training_progress(predn, path, names)
 
-        if len(self.bbox_media_panel_images) < self.max_imgs_to_log and self.current_epoch > 0:
-            if self.current_epoch % self.bbox_interval == 0:
-                box_data = [{"position": {"minX": xyxy[0], "minY": xyxy[1], "maxX": xyxy[2], "maxY": xyxy[3]},
-                             "class_id": int(cls),
-                             "box_caption": f"{names[int(cls)]} {conf:.3f}",
-                             "scores": {"class_score": conf},
-                             "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
-                boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
-                self.bbox_media_panel_images.append(wandb.Image(im, boxes=boxes, caption=path.name))
+        if (
+            len(self.bbox_media_panel_images) < self.max_imgs_to_log
+            and self.current_epoch > 0
+            and self.current_epoch % self.bbox_interval == 0
+        ):
+            box_data = [{"position": {"minX": xyxy[0], "minY": xyxy[1], "maxX": xyxy[2], "maxY": xyxy[3]},
+                         "class_id": int(cls),
+                         "box_caption": f"{names[int(cls)]} {conf:.3f}",
+                         "scores": {"class_score": conf},
+                         "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
+            boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
+            self.bbox_media_panel_images.append(wandb.Image(im, boxes=boxes, caption=path.name))
 
     def log(self, log_dict):
         """
@@ -511,30 +538,33 @@ class WandbLogger():
         arguments:
         best_result (boolean): Boolean representing if the result of this evaluation is best or not
         """
-        if self.wandb_run:
-            with all_logging_disabled():
-                if self.bbox_media_panel_images:
-                    self.log_dict["BoundingBoxDebugger"] = self.bbox_media_panel_images
-                try:
-                    wandb.log(self.log_dict)
-                except BaseException as e:
-                    LOGGER.info(
-                        f"An error occurred in wandb logger. The training will proceed without interruption. More info\n{e}")
-                    self.wandb_run.finish()
-                    self.wandb_run = None
+        if not self.wandb_run:
+            return
+        with all_logging_disabled():
+            if self.bbox_media_panel_images:
+                self.log_dict["BoundingBoxDebugger"] = self.bbox_media_panel_images
+            try:
+                wandb.log(self.log_dict)
+            except BaseException as e:
+                LOGGER.info(
+                    f"An error occurred in wandb logger. The training will proceed without interruption. More info\n{e}")
+                self.wandb_run.finish()
+                self.wandb_run = None
 
-                self.log_dict = {}
-                self.bbox_media_panel_images = []
-            if self.result_artifact:
-                self.result_artifact.add(self.result_table, 'result')
-                wandb.log_artifact(self.result_artifact, aliases=['latest', 'last', 'epoch ' + str(self.current_epoch),
-                                                                  ('best' if best_result else '')])
+            self.log_dict = {}
+            self.bbox_media_panel_images = []
+        if self.result_artifact:
+            self.result_artifact.add(self.result_table, 'result')
+            wandb.log_artifact(self.result_artifact, aliases=['latest', 'last', 'epoch ' + str(self.current_epoch),
+                                                              ('best' if best_result else '')])
 
-                wandb.log({"evaluation": self.result_table})
-                columns = ["epoch", "id", "ground truth", "prediction"]
-                columns.extend(self.data_dict['names'])
-                self.result_table = wandb.Table(columns)
-                self.result_artifact = wandb.Artifact("run_" + wandb.run.id + "_progress", "evaluation")
+            wandb.log({"evaluation": self.result_table})
+            columns = ["epoch", "id", "ground truth", "prediction"]
+            columns.extend(self.data_dict['names'])
+            self.result_table = wandb.Table(columns)
+            self.result_artifact = wandb.Artifact(
+                f"run_{wandb.run.id}_progress", "evaluation"
+            )
 
     def finish_run(self):
         """
