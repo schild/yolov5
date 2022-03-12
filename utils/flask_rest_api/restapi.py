@@ -15,7 +15,7 @@ DETECTION_URL = "/v1/object-detection/yolov5s"
 
 @app.route(DETECTION_URL, methods=["POST"])
 def predict():
-    if not request.method == "POST":
+    if request.method != "POST":
         return
 
     if request.files.get("image"):
